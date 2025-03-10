@@ -28,25 +28,13 @@
 - **보정(조정) 프로세스:**  
   시스템 시작 시와 스프링 스케줄러를 통해 5분 이상 `FINAL_COMPLETED` 상태에 도달하지 않은 결제(Payment)를 대상으로 실제 PG 결제 내역 조회 API(모킹)를 통해 결제 상태를 검증하고 조정합니다.
 
-## 주요 기능
-
-- **Spring Boot 애플리케이션**
-    - Spring Retry를 사용하여 자동 재시도(지터 백오프 지원) 기능 구현
-    - Spring Scheduling을 통해 미완료 결제 조정 작업 수행
-- **조건부 업데이트**를 통한 동시성 제어 및 `EnrollmentCount` 관리
--  **Payment** 상태를 트랜잭션별로 변경
-- **보상 메커니즘:**  
-  보상 이벤트와 리스너를 사용하여 각 트랜잭션 단계에서 실패 발생 시 보상 처리 수행
-- **보상 알림:**  
-  보상 로직 재시도 모두 실패하면 로그와 Slack(모킹) 알림을 통해 운영자에게 문제를 통지
-
 ## 아키텍처
 
 애플리케이션은 아래와 같은 핵심 모듈로 구성됩니다.
 
 ### 엔티티 (Entities)
 - **`EnrollmentCount`**  
-  낙관적 락을 적용하여 현재 수강 인원을 관리하는 테이블
+  조건부 업데이트의 베타락으로 현재 수강 인원을 관리하는 테이블
 - **`Enrollment`**  
   강의 구매 기록을 저장하는 테이블 (결제 상태 정보는 별도 관리)
 - **`Payment`**  
@@ -60,66 +48,37 @@
 - **`PaymentRepository`**  
   조건부 상태 업데이트 및 생성 시간, 상태 기준 조회 메서드를 제공
 
-### Application (Service / Orchestration / Event)
-- **서비스 (Service)**
-    - **`EnrollmentService`**  
-      각 트랜잭션 단계를 구현하며,
-        - 트랜잭션 1: 수강 인원 증가와 `Payment` 상태를 `CREATED` → `COUNT_UPDATED`로 변경
-        - 트랜잭션 2: PG 결제(모킹) 처리 후 `Payment` 상태를 `COUNT_UPDATED` → `PAYMENT_PROCESSED`로 변경
-        - 트랜잭션 3: Enrollment 생성과 함께 `Payment` 상태를 `PAYMENT_PROCESSED` → `FINAL_COMPLETED`로 변경
-    - **`CompensationService`**  
-      보상 이벤트(`PaymentCancellationEvent`, `FinalizationCompensationEvent`)를 처리하며,  
-      보상 로직 성공 시 상태를 `CANCELLED`로, 재시도 실패 시 각각 `CANCELLATION_FAILED` 또는 `FINAL_COMPENSATION_FAILED`로 업데이트하고 Slack 알림(모킹)을 전송
-    - **`PaymentAdjustmentService`**  
-      스케줄러 및 애플리케이션 시작 시 실행되어 미완료 Payment를 검증하고 조정
-- **오케스트레이션**
-    - **`LecturePaymentOrchestration`**  
-      전체 결제 프로세스를 조율하며, 각 단계 실패 시 적절한 보상 이벤트를 발행
-- **이벤트 (Event)**
-    - **`PaymentCancellationEvent`**: 트랜잭션 2 보상 이벤트
-    - **`FinalizationCompensationEvent`**: 트랜잭션 3 보상 이벤트
-    - **`PaymentCompensationListener`**: 보상 이벤트를 수신하여 `CompensationService`를 호출
-
-### Web Layer
-- **컨트롤러 (Controller)**
-    - **`PaymentController`**: 결제 요청을 처리하는 REST API 제공
-    - **DTO (`PaymentRequest`)**: 결제 요청 데이터를 전달하기 위한 객체
-- **외부 연동 (External)**
-    - **`PgApiExecutorService`**: 외부 PG API 호출을 담당 (모킹 처리)
-    - **DTO (`PaymentResponse`)**: 외부 PG API 응답 데이터를 전달하기 위한 객체
-
-## 코드 구조
-
+## 코드구조
 ```
 payment/
 ├── application
 │   ├── event
-│   │   ├── FinalizationCompensationEvent.java
-│   │   ├── PaymentCancellationEvent.java
-│   │   └── PaymentCompensationListener.java
+│   │   ├── FinalizationCompensationEvent.java      // 트랜잭션 3 보상 이벤트(최종 결제 DB 반영 실패 시) 정보를 담은 이벤트 클래스
+│   │   ├── PaymentCancellationEvent.java           // 트랜잭션 2 보상 이벤트(PG API 호출 실패 시) 정보를 담은 이벤트 클래스
+│   │   └── PaymentCompensationListener.java         // 보상 이벤트를 수신하여 CompensationService를 호출하는 리스너
 │   ├── exception
-│   │   └── BusinessException.java
+│   │   └── BusinessException.java                   // 비즈니스 로직 예외를 처리하기 위한 커스텀 예외 클래스
 │   ├── orchestration
-│   │   └── LecturePaymentOrchestration.java
+│   │   └── LecturePaymentOrchestration.java         // 전체 결제 프로세스를 오케스트레이션하며 단계별 실행 및 보상 이벤트 발행을 담당
 │   └── service
-│       ├── CompensationService.java
-│       ├── EnrollmentService.java
-│       └── PaymentAdjustmentService.java
+│       ├── CompensationService.java                 // 보상 로직(예: 보상 트랜잭션 및 fallback/recovery 처리)을 수행하는 서비스
+│       ├── EnrollmentService.java                   // 동시성 제어, PG API 호출, 최종 DB 반영 등 결제 프로세스의 각 트랜잭션 단계를 처리하는 서비스
+│       └── PaymentAdjustmentService.java            // 미완료 결제에 대해 주기적으로 조정(보정) 작업을 수행하는 서비스 (스케줄러 및 애플리케이션 시작 시 실행)
 ├── entity
-│   ├── Enrollment.java
-│   ├── EnrollmentCount.java
-│   └── Payment.java
+│   ├── Enrollment.java                              // 강의 수강(구매) 기록을 저장하는 엔티티 (결제 상태 정보는 별도의 Payment 엔티티에서 관리)
+│   ├── EnrollmentCount.java                         // 강의별 현재 수강 인원과 최대 정원을 관리하는 엔티티 (낙관적 락 적용)
+│   └── Payment.java                                 // 결제 내역 및 결제 상태를 관리하는 엔티티
 ├── repository
-│   ├── EnrollmentCountRepository.java
-│   ├── EnrollmentRepository.java
-│   └── PaymentRepository.java
+│   ├── EnrollmentCountRepository.java             // EnrollmentCount 엔티티에 대한 CRUD 및 조건부 업데이트 쿼리 제공
+│   ├── EnrollmentRepository.java                  // Enrollment 엔티티에 대한 CRUD 기능 제공
+│   └── PaymentRepository.java                       // Payment 엔티티에 대한 CRUD 및 조건부 상태 업데이트 쿼리 제공
 └── web
     ├── controller
-    │   ├── PaymentController.java
+    │   ├── PaymentController.java                   // 결제 API 요청을 처리하고, 오케스트레이션 서비스를 호출하여 결제 프로세스를 진행하는 REST 컨트롤러
     │   └── dto
-    │       └── PaymentRequest.java
+    │       └── PaymentRequest.java                  // 결제 요청 시 클라이언트에서 전달하는 데이터를 담은 DTO 클래스
     └── external
-        ├── PgApiExecutorService.java
+        ├── PgApiExecutorService.java                // 외부 PG API와의 연동(모킹 처리 포함)을 담당하는 서비스 인터페이스 및 구현 클래스
         └── dto
-            └── PaymentResponse.java
+            └── PaymentResponse.java                 // 외부 PG API 호출 응답 데이터를 담은 DTO 클래스
 ```
