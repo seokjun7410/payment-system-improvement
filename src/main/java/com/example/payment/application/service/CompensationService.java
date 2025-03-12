@@ -29,11 +29,11 @@ public class CompensationService {
 	@Retryable(value = Exception.class, maxAttempts = 3,
 		backoff = @Backoff(delay = 1000, maxDelay = 3000, random = true))
 	public void processPaymentCancellation(PaymentCancellationEvent event) {
+		// c (모킹 처리)
+		// pgApiClient.cancelPayment(...);
+
 		// 보상 로직: 수강 인원 감소
 		enrollmentCountRepository.decrement(event.getLectureId());
-
-		// 외부 결제 취소 API 호출 (모킹 처리)
-		// pgApiClient.cancelPayment(...);
 
 		// 보상 성공 시 Payment 상태 업데이트: COUNT_UPDATED → CANCELLED
 		int updated = paymentRepository.updateStatusConditionally(
