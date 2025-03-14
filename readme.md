@@ -1,84 +1,139 @@
-# Payment System
+# Payment System.
 
-이 프로젝트는 Spring Boot 기반의 결제 시스템 예제로, 동시 구매 처리를 위해 조건부 업데이트를 활용하며, 다중 트랜잭션 오케스트레이션과 보상 이벤트를 통해 데이터 일관성을 유지하는 방식을 구현합니다. 시스템은 Spring Retry(지터 백오프 지원)와 스케줄링을 사용하여 미완료 결제에 대한 주기적인 조정을 수행합니다.
+- 이 프로젝트는 "허슬풋볼" 이후 회고를 통해 결제 프로세스를 개선한 예제 형식의 프로젝트 입니다.
+- 트랜잭션 분리를 통해 락 소유시간을 줄여 동시성을 최대화 하였습니다.
+- 또한 결제 승인, 보상(Compensation) 처리, 그리고 보정(Adjustment) 과정을 통해 결제 일관성과 신뢰성을 보장합니다.
 
-## 개요
+## 프로젝트 주요 구조
 
-이 프로젝트는 아래와 같은 결제 처리 워크플로우를 구현합니다.
-
-- **조건부 업데이트:**  
-  별도의 `EnrollmentCount` 테이블을 통해 강의 수강 인원을 관리하며, `Payment` 엔티티의 상태를 조건부 업데이트 방식으로 변경합니다.
-
-- **다중 트랜잭션 처리:**  
-  결제 처리는 세 단계의 트랜잭션으로 분리됩니다.
-    1. **트랜잭션 1 (동시성 제어):**  
-       수강 인원 증가와 함께 `Payment` 상태를 `CREATED`에서 `COUNT_UPDATED`로 조건부 업데이트합니다.
-    2. **트랜잭션 2 (PG API 호출):**  
-       외부 PG API(모킹)를 호출하여 결제를 처리하고, `Payment` 상태를 `COUNT_UPDATED`에서 `PAYMENT_PROCESSED`로 변경합니다.
-    3. **트랜잭션 3 (최종 DB 반영):**  
-       `Enrollment` 레코드를 생성하고, `Payment` 상태를 `PAYMENT_PROCESSED`에서 `FINAL_COMPLETED`로 업데이트합니다.
-
-- **보상(Compensation) 이벤트:**  
-  각 트랜잭션 단계에서 오류 발생 시 보상 이벤트가 발행됩니다.
-    - **트랜잭션 2 보상:**  
-      PG API 호출 실패 시, `PaymentCancellationEvent` 이벤트가 발행되어 증가된 수강 인원을 복구하고 `Payment` 상태를 `CANCELLED`로 업데이트합니다. 만약 보상 로직 재시도 후에도 실패하면 상태는 `CANCELLATION_FAILED`로 변경되고 Slack 알림(모킹)을 전송합니다.
-    - **트랜잭션 3 보상:**  
-      최종 DB 반영 실패 시, `FinalizationCompensationEvent` 이벤트가 발행되어 보상 로직이 실행됩니다. 보상 성공 시 `Payment` 상태가 `CANCELLED`로 변경되며, 재시도 실패 시 상태는 `FINAL_COMPENSATION_FAILED`로 업데이트되고 Slack 알림이 전송됩니다.
-
-- **보정(조정) 프로세스:**  
-  시스템 시작 시와 스프링 스케줄러를 통해 5분 이상 `FINAL_COMPLETED` 상태에 도달하지 않은 결제(Payment)를 대상으로 실제 PG 결제 내역 조회 API(모킹)를 통해 결제 상태를 검증하고 조정합니다.
-
-## 아키텍처
-
-애플리케이션은 아래와 같은 핵심 모듈로 구성됩니다.
-
-### 엔티티 (Entities)
-- **`EnrollmentCount`**  
-  조건부 업데이트의 베타락으로 현재 수강 인원을 관리하는 테이블
-- **`Enrollment`**  
-  강의 구매 기록을 저장하는 테이블 (결제 상태 정보는 별도 관리)
-- **`Payment`**  
-  결제 상태 및 결제 관련 내역(예: 상태, 생성 시간 등)을 관리하는 테이블
-
-### Repository
-- **`EnrollmentCountRepository`**  
-  조건부 증감 업데이트 메서드를 포함
-- **`EnrollmentRepository`**  
-  Enrollment 레코드에 대한 기본 CRUD 제공
-- **`PaymentRepository`**  
-  조건부 상태 업데이트 및 생성 시간, 상태 기준 조회 메서드를 제공
-
-## 코드구조
 ```
-payment/
 ├── application
 │   ├── event
-│   │   ├── FinalizationCompensationEvent.java      // 트랜잭션 3 보상 이벤트(최종 결제 DB 반영 실패 시) 정보를 담은 이벤트 클래스
-│   │   ├── PaymentCancellationEvent.java           // 트랜잭션 2 보상 이벤트(PG API 호출 실패 시) 정보를 담은 이벤트 클래스
-│   │   └── PaymentCompensationListener.java         // 보상 이벤트를 수신하여 CompensationService를 호출하는 리스너
+│   │   ├── PaymentCompensationListener.java           // 보상 이벤트를 수신하여 CompensationService 호출
+│   │   ├── FirstCompensationEvent.java                // 동시성 제어 실패 등 초기 단계 실패 보상 이벤트
+│   │   ├── SecondCompensationEvent.java               // PG 결제 실패 시 보상 이벤트
+│   │   └── FinalCompensationEvent.java                // 최종 결제 DB 반영 실패 시 보상 이벤트
 │   ├── exception
-│   │   └── BusinessException.java                   // 비즈니스 로직 예외를 처리하기 위한 커스텀 예외 클래스
+│   │   ├── BusinessException.java                     // 비즈니스 로직 관련 예외 처리
+│   │   └── GlobalExceptionHandler.java                // 전역 예외 핸들러
 │   ├── orchestration
-│   │   └── LecturePaymentOrchestration.java         // 전체 결제 프로세스를 오케스트레이션하며 단계별 실행 및 보상 이벤트 발행을 담당
+│   │   ├── PaymentApproveOrchestration.java           // 결제 승인 오케스트레이션 인터페이스
+│   │   └── impl
+│   │       ├── PaymentApprove1Phase.java              // 1단계 결제 승인 로직 (성능 비교를 위한 예제 사용X)
+│   │       └── PaymentApprove3Phase.java              // 3단계 결제 승인 오케스트레이션 구현 (실제 사용)
 │   └── service
-│       ├── CompensationService.java                 // 보상 로직(예: 보상 트랜잭션 및 fallback/recovery 처리)을 수행하는 서비스
-│       ├── EnrollmentService.java                   // 동시성 제어, PG API 호출, 최종 DB 반영 등 결제 프로세스의 각 트랜잭션 단계를 처리하는 서비스
-│       └── PaymentAdjustmentService.java            // 미완료 결제에 대해 주기적으로 조정(보정) 작업을 수행하는 서비스 (스케줄러 및 애플리케이션 시작 시 실행)
-├── entity
-│   ├── Enrollment.java                              // 강의 수강(구매) 기록을 저장하는 엔티티 (결제 상태 정보는 별도의 Payment 엔티티에서 관리)
-│   ├── EnrollmentCount.java                         // 강의별 현재 수강 인원과 최대 정원을 관리하는 엔티티 (낙관적 락 적용)
-│   └── Payment.java                                 // 결제 내역 및 결제 상태를 관리하는 엔티티
-├── repository
-│   ├── EnrollmentCountRepository.java             // EnrollmentCount 엔티티에 대한 CRUD 및 조건부 업데이트 쿼리 제공
-│   ├── EnrollmentRepository.java                  // Enrollment 엔티티에 대한 CRUD 기능 제공
-│   └── PaymentRepository.java                       // Payment 엔티티에 대한 CRUD 및 조건부 상태 업데이트 쿼리 제공
-└── web
-    ├── controller
-    │   ├── PaymentController.java                   // 결제 API 요청을 처리하고, 오케스트레이션 서비스를 호출하여 결제 프로세스를 진행하는 REST 컨트롤러
-    │   └── dto
-    │       └── PaymentRequest.java                  // 결제 요청 시 클라이언트에서 전달하는 데이터를 담은 DTO 클래스
-    └── external
-        ├── PgApiExecutorService.java                // 외부 PG API와의 연동(모킹 처리 포함)을 담당하는 서비스 인터페이스 및 구현 클래스
-        └── dto
-            └── PaymentResponse.java                 // 외부 PG API 호출 응답 데이터를 담은 DTO 클래스
+│       ├── CompensationService.java                   // 보상 로직 구현: 실패 시 롤백 및 상태 업데이트
+│       ├── EnrollmentService.java                     // 수강 인원 증가, PG 결제 호출, 최종 Enrollment 반영
+│       └── PaymentAdjustmentService.java              // 결제 조정(보정) 관련 기능 (추가 기능)
 ```
+
+## 주요 기능 및 동작 방식
+
+### 1. 결제 승인 프로세스 (3단계 오케스트레이션)
+```mermaid
+sequenceDiagram
+    participant 클라이언트
+    participant PaymentController
+    participant PA as PaymentApproveOrchestration
+    participant ES as EnrollmentService
+    participant Comp as 보상 이벤트 처리
+
+    클라이언트 ->> PaymentController: POST /payment 요청
+    PaymentController ->> PA: approve PaymentRequest 호출
+
+    PA ->> ES: 동시성 제어 (조건부 업데이트)
+    alt 성공
+        ES -->> PA: 상태 변경 COUNT_UPDATED
+    else 실패
+        PA ->> Comp: PaymentStatusToCancelEvent 발행
+    end
+
+    PA ->> ES: PG 출금 API 호출
+    alt 성공
+        ES -->> PA: 상태 변경 PAYMENT_PROCESSED
+    else 실패
+        PA ->> Comp: PaymentCancellationEvent 발행
+    end
+
+    PA ->> ES: 강의수강 DB Insert 호출
+    alt 성공
+        ES -->> PA: 상태 변경 FINAL_COMPLETED
+    else 실패
+        PA ->> Comp: FinalizationCompensationEvent 발행
+    end
+
+    PA -->> PaymentController: 승인 완료 응답
+    PaymentController -->> 클라이언트: HTTP 200 OK 반환
+
+```
+- **단계 1: 동시성 제어 및 수강 인원 증가**  
+  `EnrollmentService.enrollmentCountTryIncrement` 메소드에서 강의의 수강 인원을 증가시키고, 결제 상태를 `CREATED`에서 `COUNT_UPDATED`로 조건부 업데이트합니다.
+  조건부 업데이트를 이용해 한번의 Query로 동시성을 제어합니다. 
+  - 실패 시: 수강 인원 초과 등의 문제로 `PaymentStatusToCancelEvent` 이벤트를 발행하여 보상 로직을 수행합니다.
+
+- **단계 2: PG API 결제 호출**  
+  `EnrollmentService.processPayment` 메소드에서 외부 PG API(모킹)를 호출하여 결제를 처리합니다. 결제 성공 시 Payment 상태가 `COUNT_UPDATED`에서 `PAYMENT_PROCESSED`로 변경됩니다.  
+  - 실패 시: `PaymentCancellationEvent` 이벤트를 발행하여 보상 처리를 수행합니다.
+
+- **단계 3: 최종 Enrollment 반영**  
+  `EnrollmentService.finalizeEnrollment` 메소드에서 실제 수강 신청(Enrollment) 기록을 DB에 저장하고, Payment 상태를 `PAYMENT_PROCESSED`에서 `FINAL_COMPLETED`로 업데이트합니다.  
+  - 실패 시: `FinalizationCompensationEvent` 이벤트를 발행하여 보상 처리를 진행합니다.
+
+### 2. 보상(Compensation) 처리
+
+- **보상 이벤트 리스너**  
+  `PaymentCompensationListener` 클래스는 비동기 이벤트 리스닝을 통해 각 보상 이벤트(`PaymentStatusToCancelEvent`, `PaymentCancellationEvent`, `FinalizationCompensationEvent`)를 수신하고, `CompensationService`의 해당 보상 메소드를 호출합니다.
+
+```mermaid
+sequenceDiagram
+    participant E as 이벤트 발행자
+    participant Listener as PaymentCompensationListener
+    participant Service as CompensationService
+
+    E ->> Listener: FirstCompensationEvent 발생
+    Listener ->> Service: updateCancelStatus 호출
+    Service -->> Listener: 상태 업데이트 완료
+
+    E ->> Listener: SecondCompensationEvent 발생
+    Listener ->> Service: processPaymentCancellation 호출
+    alt 재시도 성공
+        Service -->> Listener: 상태 업데이트 완료 (CANCELLED)
+    else 재시도 실패
+        Service -->> Listener: @Recover 호출, 상태 업데이트 (CANCELLATION_FAILED) 및 Slack 알림 전송
+    end
+
+    E ->> Listener: FinalCompensationEvent 발생
+    Listener ->> Service: processFinalizationCompensation 호출
+    alt 재시도 성공
+        Service -->> Listener: 상태 업데이트 완료 (CANCELLED)
+    else 재시도 실패
+        Service -->> Listener: @Recover 호출, 상태 업데이트 (FINAL_COMPENSATION_FAILED) 및 Slack 알림 전송
+    end
+```
+
+- **보상 로직**  
+  `CompensationService`는 다음과 같은 보상 처리를 수행합니다:
+  - ** 동시성 제어 실패 보상 : FirstCompensationEvent**  
+    - Payment 상태를 `CREATED`에서 `EXCEEDS_CAPACITY`로 업데이트합니다.
+  - **PG 결제 실패 보상 : SecondCompensationEvent**  
+    - EnrollmentCount를 감소시키고, Payment 상태를 `COUNT_UPDATED`에서 `CANCELLED`로 업데이트합니다.
+  - **Enrollment 저장 실패 보상 : FinalCompensationEvent **  
+    - EnrollmentCount 감소, 외부 PG API 모킹을 통한 취소 호출, 그리고 Payment 상태를 `PAYMENT_PROCESSED`에서 `CANCELLED`로 업데이트합니다.
+  - **재시도 및 Fallback:**  
+    - Spring Retry를 이용하여 최대 3회 재시도하며, 재시도 실패 시 `@Recover` 메소드를 통해 상태를 `CANCELLATION_FAILED` 또는 `FINAL_COMPENSATION_FAILED`로 업데이트하고, Slack 알림(모킹)을 전송합니다.
+
+### 3. 예외 및 트랜잭션 관리
+
+- **예외 처리:**  
+  `BusinessException`과 `GlobalExceptionHandler`를 통해 비즈니스 로직의 예외를 처리하며, 문제 발생 시 적절한 보상 이벤트를 트리거합니다.
+
+- **조정 과정: 트랜잭션 3단계 실행 중 장애 대비:**
+  현재 시각으로부터 5분 이전에 생성된 결제 중 EXCEEDS_CAPACITY 또는 FINAL_COMPLETED가 아닌 결제들에 대해 PG API(모킹)를 호출하여 실제 결제 내역을 비교하고 해결합니다.
+  프로젝트 실행시 조정 과정을 바로 실행하여 서버 복구 후에 일관성을 점검합니다.
+
+## 향후 개선 사항
+
+- 실제 PG API 연동 구현 및 외부 결제 시스템 연동
+- 사용자 인증 및 권한 관리 기능 추가
+- 상세한 예외 처리 및 로깅 강화
+- 보상 처리 로직 확장 및 다양한 실패 시나리오 지원
