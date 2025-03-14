@@ -1,15 +1,14 @@
 package com.example.payment.application.orchestration.impl;
 
-import com.example.payment.application.event.FinalizationCompensationEvent;
-import com.example.payment.application.event.PaymentCancellationEvent;
-import com.example.payment.application.event.PaymentStatusToCancelEvent;
+import com.example.payment.application.event.FinalCompensationEvent;
+import com.example.payment.application.event.FirstCompensationEvent;
+import com.example.payment.application.event.SecondCompensationEvent;
 import com.example.payment.application.exception.BusinessException;
 import com.example.payment.application.orchestration.PaymentApproveOrchestration;
 import com.example.payment.application.service.EnrollmentService;
 import com.example.payment.web.controller.dto.PaymentRequest;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.ApplicationEventPublisher;
-import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 @Service
@@ -27,7 +26,7 @@ public class PaymentApprove1Phase implements PaymentApproveOrchestration {
 			enrollmentService.enrollmentCountTryIncrement(lectureId, userId);
 		} catch (Exception e) {
 			eventPublisher.publishEvent(
-				new PaymentStatusToCancelEvent(this, lectureId, userId, "PG API 호출 실패: " + e.getMessage())
+				new FirstCompensationEvent(this, lectureId, userId, "PG API 호출 실패: " + e.getMessage())
 			);
 			if(!(e instanceof BusinessException))
 				e.printStackTrace();
@@ -39,7 +38,7 @@ public class PaymentApprove1Phase implements PaymentApproveOrchestration {
 			enrollmentService.processPayment(paymentRequest);
 		} catch (Exception e) {
 			eventPublisher.publishEvent(
-				new PaymentCancellationEvent(this, lectureId, userId, "PG API 호출 실패: " + e.getMessage())
+				new SecondCompensationEvent(this, lectureId, userId, "PG API 호출 실패: " + e.getMessage())
 			);
 			e.printStackTrace();
 			throw new BusinessException("PG 결제 실패: " + e.getMessage());
@@ -50,7 +49,7 @@ public class PaymentApprove1Phase implements PaymentApproveOrchestration {
 			enrollmentService.finalizeEnrollment(lectureId, userId);
 		} catch (Exception e) {
 			eventPublisher.publishEvent(
-				new FinalizationCompensationEvent(this, lectureId, userId, "최종 결제 DB 반영 실패: " + e.getMessage())
+				new FinalCompensationEvent(this, lectureId, userId, "최종 결제 DB 반영 실패: " + e.getMessage())
 			);
 			e.printStackTrace();
 			throw new BusinessException("최종 결제 반영 실패: " + e.getMessage());

@@ -1,11 +1,12 @@
 package com.example.payment.application.service;
 
-import com.example.payment.application.event.PaymentStatusToCancelEvent;
-import com.example.payment.repository.PaymentRepository;
-import com.example.payment.application.event.FinalizationCompensationEvent;
-import com.example.payment.application.event.PaymentCancellationEvent;
+import com.example.payment.application.event.FinalCompensationEvent;
+import com.example.payment.application.event.FirstCompensationEvent;
+import com.example.payment.application.event.SecondCompensationEvent;
 import com.example.payment.repository.EnrollmentCountRepository;
+import com.example.payment.repository.PaymentRepository;
 import com.example.payment.web.external.PgApiClient;
+import com.example.payment.web.external.SlackApiClient;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.retry.annotation.Backoff;
@@ -22,6 +23,20 @@ public class CompensationService {
 	private final EnrollmentCountRepository enrollmentCountRepository;
 	private final PaymentRepository paymentRepository;
 	private final PgApiClient pgApiClient;
+	private final SlackApiClient slackApiClient;
+
+	/**
+	 * 트랜잭션 1 보상: 동시성 제어 실패에 따른 보상 처리
+	 *  Payment 상태를 CREATED → EXCEEDS_CAPACITY 로 조건부 업데이트합니다₩.
+	 */
+	@Transactional
+	@Retryable(value = Exception.class, maxAttempts = 3,
+		backoff = @Backoff(delay = 1000, maxDelay = 3000, random = true))
+	public void firstCompensationProcess(FirstCompensationEvent event) {
+		paymentRepository.updateStatusConditionally(event.getLectureId(), event.getUserId(), "CREATED", "EXCEEDS_CAPACITY");
+		log.info("PaymentCancellation compensation successful for lectureId: {}, userId: {}",
+			event.getLectureId(), event.getUserId());
+	}
 
 	/**
 	 * 트랜잭션 2 보상: PG API 호출 실패에 따른 보상 처리
@@ -31,7 +46,7 @@ public class CompensationService {
 	@Transactional
 	@Retryable(value = Exception.class, maxAttempts = 3,
 		backoff = @Backoff(delay = 1000, maxDelay = 3000, random = true))
-	public void processPaymentCancellation(PaymentCancellationEvent event) {
+	public void secondCompensationProcess(SecondCompensationEvent event) {
 		// 보상 로직: 수강 인원 감소
 		enrollmentCountRepository.decrement(event.getLectureId());
 
@@ -55,7 +70,7 @@ public class CompensationService {
 	@Transactional
 	@Retryable(value = Exception.class, maxAttempts = 3,
 		backoff = @Backoff(delay = 1000, maxDelay = 3000, random = true))
-	public void processFinalizationCompensation(FinalizationCompensationEvent event) {
+	public void finalCompensationProcess(FinalCompensationEvent event) {
 		// 보상 로직: 수강 인원 감소
 		enrollmentCountRepository.decrement(event.getLectureId());
 
@@ -74,49 +89,33 @@ public class CompensationService {
 	}
 
 	/**
-	 * PaymentCancellationEvent 보상 로직 최종 실패 시 fallback 처리.
+	 * SecondCompensationEvent 보상 로직 최종 실패 시 fallback 처리.
 	 * 모든 재시도가 실패한 경우 Payment 상태를 CANCELLATION_FAILED로 업데이트하고, 슬랙 알림 전송.
 	 */
 	@Recover
-	public void recoverPaymentCancellation(Exception e, PaymentCancellationEvent event) {
+	public void recoverSecondCompensationProcess(Exception e, SecondCompensationEvent event) {
 		int updated = paymentRepository.updateStatusConditionally(
 			event.getLectureId(), event.getUserId(), "COUNT_UPDATED", "CANCELLATION_FAILED"
 		);
 		log.error("Payment cancellation compensation FAILED for lectureId: {}, userId: {}. Reason: {}. Updated rows: {}",
 			event.getLectureId(), event.getUserId(), event.getReason(), updated, e);
-		sendSlackAlert("Payment cancellation compensation FAILED for lectureId: " +
+		slackApiClient.sendSlackAlert("Payment cancellation compensation FAILED for lectureId: " +
 			event.getLectureId() + ", userId: " + event.getUserId() + ". Reason: " + e.getMessage());
 	}
 
 	/**
-	 * FinalizationCompensationEvent 보상 로직 최종 실패 시 fallback 처리.
+	 * FinalCompensationEvent 보상 로직 최종 실패 시 fallback 처리.
 	 * 모든 재시도가 실패한 경우 Payment 상태를 FINAL_COMPENSATION_FAILED로 업데이트하고, 슬랙 알림 전송.
 	 */
 	@Recover
-	public void recoverFinalizationCompensation(Exception e, FinalizationCompensationEvent event) {
+	public void recoverFinalCompensationProcess(Exception e, FinalCompensationEvent event) {
 		int updated = paymentRepository.updateStatusConditionally(
 			event.getLectureId(), event.getUserId(), "PAYMENT_PROCESSED", "FINAL_COMPENSATION_FAILED"
 		);
 		log.error("Finalization compensation FAILED for lectureId: {}, userId: {}. Reason: {}. Updated rows: {}",
 			event.getLectureId(), event.getUserId(), event.getReason(), updated, e);
-		sendSlackAlert("Finalization compensation FAILED for lectureId: " +
+		slackApiClient.sendSlackAlert("Finalization compensation FAILED for lectureId: " +
 			event.getLectureId() + ", userId: " + event.getUserId() + ". Reason: " + e.getMessage());
 	}
 
-	@Transactional
-	@Retryable(value = Exception.class, maxAttempts = 3,
-		backoff = @Backoff(delay = 1000, maxDelay = 3000, random = true))
-	public void updateCancelStatus(PaymentStatusToCancelEvent event) {
-		paymentRepository.updateStatusConditionally(event.getLectureId(), event.getUserId(), "CREATED", "EXCEEDS_CAPACITY");
-		log.info("PaymentCancellation compensation successful for lectureId: {}, userId: {}",
-			event.getLectureId(), event.getUserId());
-	}
-
-	/**
-	 * 슬랙 메시지 전송 (모킹): 재시도 모두 실패한 경우에만 호출됩니다.
-	 */
-	private void sendSlackAlert(String message) {
-		// 실제 구현 시 슬랙 API 연동 코드 작성
-		log.info("Sending Slack alert: {}", message);
-	}
 }

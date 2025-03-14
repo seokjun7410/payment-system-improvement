@@ -12,9 +12,9 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
-import com.example.payment.application.event.FinalizationCompensationEvent;
-import com.example.payment.application.event.PaymentCancellationEvent;
-import com.example.payment.application.event.PaymentStatusToCancelEvent;
+import com.example.payment.application.event.FinalCompensationEvent;
+import com.example.payment.application.event.SecondCompensationEvent;
+import com.example.payment.application.event.FirstCompensationEvent;
 import com.example.payment.application.exception.BusinessException;
 import com.example.payment.application.orchestration.impl.PaymentApprove3Phase;
 import com.example.payment.application.service.EnrollmentService;
@@ -71,7 +71,7 @@ class PaymentApproveOrchestrationTest {
 
 	/**
 	 * 트랜잭션 1(동시성 제어) 실패 시
-	 * BusinessException이 발생하고 PaymentStatusToCancelEvent 발행
+	 * BusinessException이 발생하고 FirstCompensationEvent 발행
 	 */
 	@Test
 	void testEnrollLecture_failureInStep1() {
@@ -88,9 +88,10 @@ class PaymentApproveOrchestrationTest {
 		verify(enrollmentService, never()).finalizeEnrollment(anyLong(), anyLong());
 
 		// 보상 이벤트 발행 검증
-		ArgumentCaptor<PaymentStatusToCancelEvent> eventCaptor = ArgumentCaptor.forClass(PaymentStatusToCancelEvent.class);
+		ArgumentCaptor<FirstCompensationEvent> eventCaptor = ArgumentCaptor.forClass(
+			FirstCompensationEvent.class);
 		verify(eventPublisher, times(1)).publishEvent(eventCaptor.capture());
-		PaymentStatusToCancelEvent publishedEvent = eventCaptor.getValue();
+		FirstCompensationEvent publishedEvent = eventCaptor.getValue();
 		assertEquals(lectureId, publishedEvent.getLectureId());
 		assertEquals(userId, publishedEvent.getUserId());
 		assertTrue(publishedEvent.getReason().contains("동시성 제어 실패"));
@@ -117,9 +118,10 @@ class PaymentApproveOrchestrationTest {
 		verify(enrollmentService, never()).finalizeEnrollment(anyLong(), anyLong());
 
 		// PaymentCancellationEvent가 발행되었는지 검증
-		ArgumentCaptor<PaymentCancellationEvent> eventCaptor = ArgumentCaptor.forClass(PaymentCancellationEvent.class);
+		ArgumentCaptor<SecondCompensationEvent> eventCaptor = ArgumentCaptor.forClass(
+			SecondCompensationEvent.class);
 		verify(eventPublisher, times(1)).publishEvent(eventCaptor.capture());
-		PaymentCancellationEvent publishedEvent = eventCaptor.getValue();
+		SecondCompensationEvent publishedEvent = eventCaptor.getValue();
 		assertEquals(lectureId, publishedEvent.getLectureId());
 		assertEquals(userId, publishedEvent.getUserId());
 		assertTrue(publishedEvent.getReason().contains("PG 결제 실패"));
@@ -147,9 +149,10 @@ class PaymentApproveOrchestrationTest {
 		verify(enrollmentService, times(1)).finalizeEnrollment(lectureId, userId);
 
 		// FinalizationCompensationEvent가 발행되었는지 검증
-		ArgumentCaptor<FinalizationCompensationEvent> eventCaptor = ArgumentCaptor.forClass(FinalizationCompensationEvent.class);
+		ArgumentCaptor<FinalCompensationEvent> eventCaptor = ArgumentCaptor.forClass(
+			FinalCompensationEvent.class);
 		verify(eventPublisher, times(1)).publishEvent(eventCaptor.capture());
-		FinalizationCompensationEvent publishedEvent = eventCaptor.getValue();
+		FinalCompensationEvent publishedEvent = eventCaptor.getValue();
 		assertEquals(lectureId, publishedEvent.getLectureId());
 		assertEquals(userId, publishedEvent.getUserId());
 		assertTrue(publishedEvent.getReason().contains("최종 결제 DB 반영 실패"));

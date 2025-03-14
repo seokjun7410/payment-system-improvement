@@ -170,7 +170,7 @@ class PaymentE2EFailureFlowTest {
 	/**
 	 * [시나리오 3] 트랜잭션 3 실패 시뮬레이션
 	 * 테스트 전용 EnrollmentService 빈(TestEnrollmentService)을 주입하여,
-	 * finalizeEnrollment()에서 강제로 예외를 발생시켜 FinalizationCompensationEvent 보상 로직을 유도합니다.
+	 * finalizeEnrollment()에서 강제로 예외를 발생시켜 FinalCompensationEvent 보상 로직을 유도합니다.
 	 * 이 경우 Payment 상태가 "CANCELLED" 또는 "FINAL_COMPENSATION_FAILED"로 업데이트되어야 합니다.
 	 */
 	@Test

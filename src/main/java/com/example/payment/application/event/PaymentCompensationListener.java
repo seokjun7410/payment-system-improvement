@@ -14,20 +14,20 @@ public class PaymentCompensationListener {
 	private final CompensationService compensationService;
 	@EventListener
 	@Async
-	public void firstPhaseCompensation(PaymentStatusToCancelEvent event) {
-		compensationService.updateCancelStatus(event);
+	public void firstPhaseCompensation(FirstCompensationEvent event) {
+		compensationService.firstCompensationProcess(event);
 	}
 
 	@EventListener
 	@Async
-	public void secondPhaseCompensation(PaymentCancellationEvent event) {
-		compensationService.processPaymentCancellation(event);
+	public void secondPhaseCompensation(SecondCompensationEvent event) {
+		compensationService.secondCompensationProcess(event);
 	}
 
 	@EventListener
 	@Async
-	public void finalPhaseCompensation(FinalizationCompensationEvent event) {
-		compensationService.processFinalizationCompensation(event);
+	public void finalPhaseCompensation(FinalCompensationEvent event) {
+		compensationService.finalCompensationProcess(event);
 	}
 
 }

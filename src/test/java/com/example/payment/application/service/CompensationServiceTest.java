@@ -7,8 +7,8 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import com.example.payment.application.event.FinalizationCompensationEvent;
-import com.example.payment.application.event.PaymentCancellationEvent;
+import com.example.payment.application.event.FinalCompensationEvent;
+import com.example.payment.application.event.SecondCompensationEvent;
 import com.example.payment.repository.EnrollmentCountRepository;
 import com.example.payment.repository.PaymentRepository;
 import com.example.payment.web.external.PgApiClient;
@@ -38,13 +38,13 @@ class CompensationServiceTest {
 	private final Long userId = 100L;
 	private final String reason = "Test failure reason";
 
-	private PaymentCancellationEvent cancellationEvent;
-	private FinalizationCompensationEvent finalizationEvent;
+	private SecondCompensationEvent cancellationEvent;
+	private FinalCompensationEvent finalizationEvent;
 
 	@BeforeEach
 	void setUp() {
-		cancellationEvent = new PaymentCancellationEvent(this, lectureId, userId, reason);
-		finalizationEvent = new FinalizationCompensationEvent(this, lectureId, userId, reason);
+		cancellationEvent = new SecondCompensationEvent(this, lectureId, userId, reason);
+		finalizationEvent = new FinalCompensationEvent(this, lectureId, userId, reason);
 	}
 
 	// ================================
@@ -59,7 +59,7 @@ class CompensationServiceTest {
 		when(paymentRepository.updateStatusConditionally(lectureId, userId, "COUNT_UPDATED", "CANCELLED"))
 			.thenReturn(1);
 
-		assertDoesNotThrow(() -> compensationService.processPaymentCancellation(cancellationEvent));
+		assertDoesNotThrow(() -> compensationService.secondCompensationProcess(cancellationEvent));
 
 		verify(enrollmentCountRepository, times(1)).decrement(lectureId);
 		verify(paymentRepository, times(1))
@@ -73,7 +73,7 @@ class CompensationServiceTest {
 			.thenReturn(0);
 
 		RuntimeException exception = assertThrows(RuntimeException.class, () ->
-			compensationService.processPaymentCancellation(cancellationEvent)
+			compensationService.secondCompensationProcess(cancellationEvent)
 		);
 		assertTrue(exception.getMessage().contains("Failed to update Payment status during PaymentCancellation compensation"));
 
@@ -92,7 +92,7 @@ class CompensationServiceTest {
 		when(paymentRepository.updateStatusConditionally(lectureId, userId, "PAYMENT_PROCESSED", "CANCELLED"))
 			.thenReturn(1);
 
-		assertDoesNotThrow(() -> compensationService.processFinalizationCompensation(finalizationEvent));
+		assertDoesNotThrow(() -> compensationService.finalCompensationProcess(finalizationEvent));
 
 		verify(enrollmentCountRepository, times(1)).decrement(lectureId);
 		verify(paymentRepository, times(1))
@@ -106,7 +106,7 @@ class CompensationServiceTest {
 			.thenReturn(0);
 
 		RuntimeException exception = assertThrows(RuntimeException.class, () ->
-			compensationService.processFinalizationCompensation(finalizationEvent)
+			compensationService.finalCompensationProcess(finalizationEvent)
 		);
 		assertTrue(exception.getMessage().contains("Failed to update Payment status during Finalization compensation"));
 
@@ -127,7 +127,7 @@ class CompensationServiceTest {
 			.thenReturn(1);
 
 		// @Recover 메서드는 재시도 실패 후 fallback 호출 시 실행되므로, 직접 호출하여 검증
-		compensationService.recoverPaymentCancellation(new Exception("Test Exception"), cancellationEvent);
+		compensationService.recoverSecondCompensationProcess(new Exception("Test Exception"), cancellationEvent);
 
 		verify(paymentRepository, times(1))
 			.updateStatusConditionally(lectureId, userId, "COUNT_UPDATED", "CANCELLATION_FAILED");
@@ -140,7 +140,7 @@ class CompensationServiceTest {
 		when(paymentRepository.updateStatusConditionally(lectureId, userId, "PAYMENT_PROCESSED", "FINAL_COMPENSATION_FAILED"))
 			.thenReturn(1);
 
-		compensationService.recoverFinalizationCompensation(new Exception("Test Exception"), finalizationEvent);
+		compensationService.recoverFinalCompensationProcess(new Exception("Test Exception"), finalizationEvent);
 
 		verify(paymentRepository, times(1))
 			.updateStatusConditionally(lectureId, userId, "PAYMENT_PROCESSED", "FINAL_COMPENSATION_FAILED");

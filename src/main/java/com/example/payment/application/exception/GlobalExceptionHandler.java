@@ -1,6 +1,5 @@
 package com.example.payment.application.exception;
 
-import com.example.payment.application.exception.BusinessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ControllerAdvice;
