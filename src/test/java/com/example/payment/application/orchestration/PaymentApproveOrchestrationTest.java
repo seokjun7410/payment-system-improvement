@@ -14,7 +14,9 @@ import static org.mockito.Mockito.verify;
 
 import com.example.payment.application.event.FinalizationCompensationEvent;
 import com.example.payment.application.event.PaymentCancellationEvent;
+import com.example.payment.application.event.PaymentStatusToCancelEvent;
 import com.example.payment.application.exception.BusinessException;
+import com.example.payment.application.orchestration.impl.PaymentApprove3Phase;
 import com.example.payment.application.service.EnrollmentService;
 import com.example.payment.web.controller.dto.PaymentRequest;
 import org.junit.jupiter.api.BeforeEach;
@@ -27,7 +29,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.context.ApplicationEventPublisher;
 
 @ExtendWith(MockitoExtension.class)
-class LecturePaymentOrchestrationTest {
+class PaymentApproveOrchestrationTest {
 
 	@Mock
 	private EnrollmentService enrollmentService;
@@ -36,7 +38,7 @@ class LecturePaymentOrchestrationTest {
 	private ApplicationEventPublisher eventPublisher;
 
 	@InjectMocks
-	private LecturePaymentOrchestration orchestration;
+	private PaymentApprove3Phase orchestration;
 
 	private final Long lectureId = 1L;
 	private final Long userId = 100L;
@@ -45,6 +47,8 @@ class LecturePaymentOrchestrationTest {
 	@BeforeEach
 	void setUp() {
 		paymentRequest = new PaymentRequest();
+		paymentRequest.setLectureId(lectureId);  // 1L 설정
+		paymentRequest.setUserId(userId);        // 100L 설정
 		// 필요한 필드 초기화 (필요시 추가)
 	}
 
@@ -55,11 +59,11 @@ class LecturePaymentOrchestrationTest {
 	@Test
 	void testEnrollLecture_success() {
 		// 각 단계 성공(아무런 예외가 발생하지 않음)라고 가정
-		assertDoesNotThrow(() -> orchestration.enrollLecture(lectureId, userId, paymentRequest));
+		assertDoesNotThrow(() -> orchestration.approve(paymentRequest));
 
 		// 각 단계가 한 번씩 호출되었는지 검증
 		verify(enrollmentService, times(1)).enrollmentCountTryIncrement(lectureId, userId);
-		verify(enrollmentService, times(1)).processPayment(paymentRequest, lectureId, userId);
+		verify(enrollmentService, times(1)).processPayment(paymentRequest);
 		verify(enrollmentService, times(1)).finalizeEnrollment(lectureId, userId);
 		// 보상 이벤트는 발행되지 않아야 함
 		verify(eventPublisher, never()).publishEvent(any());
@@ -67,7 +71,7 @@ class LecturePaymentOrchestrationTest {
 
 	/**
 	 * 트랜잭션 1(동시성 제어) 실패 시
-	 * BusinessException이 발생하고 보상 이벤트는 발행되지 않아야 합니다.
+	 * BusinessException이 발생하고 PaymentStatusToCancelEvent 발행
 	 */
 	@Test
 	void testEnrollLecture_failureInStep1() {
@@ -75,15 +79,21 @@ class LecturePaymentOrchestrationTest {
 			.when(enrollmentService).enrollmentCountTryIncrement(lectureId, userId);
 
 		BusinessException ex = assertThrows(BusinessException.class,
-			() -> orchestration.enrollLecture(lectureId, userId, paymentRequest));
+			() -> orchestration.approve(paymentRequest));
 
 		assertTrue(ex.getMessage().contains("동시성 제어 실패"));
 		// 트랜잭션1 실패이므로 다른 단계는 호출되지 않아야 함
 		verify(enrollmentService, times(1)).enrollmentCountTryIncrement(lectureId, userId);
-		verify(enrollmentService, never()).processPayment(any(), anyLong(), anyLong());
+		verify(enrollmentService, never()).processPayment(any());
 		verify(enrollmentService, never()).finalizeEnrollment(anyLong(), anyLong());
-		// 보상 이벤트는 발행되지 않음
-		verify(eventPublisher, never()).publishEvent(any());
+
+		// 보상 이벤트 발행 검증
+		ArgumentCaptor<PaymentStatusToCancelEvent> eventCaptor = ArgumentCaptor.forClass(PaymentStatusToCancelEvent.class);
+		verify(eventPublisher, times(1)).publishEvent(eventCaptor.capture());
+		PaymentStatusToCancelEvent publishedEvent = eventCaptor.getValue();
+		assertEquals(lectureId, publishedEvent.getLectureId());
+		assertEquals(userId, publishedEvent.getUserId());
+		assertTrue(publishedEvent.getReason().contains("동시성 제어 실패"));
 	}
 
 	/**
@@ -96,14 +106,14 @@ class LecturePaymentOrchestrationTest {
 		doNothing().when(enrollmentService).enrollmentCountTryIncrement(lectureId, userId);
 		// 트랜잭션 2에서 예외 발생
 		doThrow(new BusinessException("PG 결제 실패"))
-			.when(enrollmentService).processPayment(paymentRequest, lectureId, userId);
+			.when(enrollmentService).processPayment(paymentRequest);
 
 		BusinessException ex = assertThrows(BusinessException.class,
-			() -> orchestration.enrollLecture(lectureId, userId, paymentRequest));
+			() -> orchestration.approve(paymentRequest));
 
 		assertTrue(ex.getMessage().contains("PG 결제 실패"));
 		verify(enrollmentService, times(1)).enrollmentCountTryIncrement(lectureId, userId);
-		verify(enrollmentService, times(1)).processPayment(paymentRequest, lectureId, userId);
+		verify(enrollmentService, times(1)).processPayment(paymentRequest);
 		verify(enrollmentService, never()).finalizeEnrollment(anyLong(), anyLong());
 
 		// PaymentCancellationEvent가 발행되었는지 검증
@@ -112,7 +122,7 @@ class LecturePaymentOrchestrationTest {
 		PaymentCancellationEvent publishedEvent = eventCaptor.getValue();
 		assertEquals(lectureId, publishedEvent.getLectureId());
 		assertEquals(userId, publishedEvent.getUserId());
-		assertTrue(publishedEvent.getReason().contains("PG API 호출 실패"));
+		assertTrue(publishedEvent.getReason().contains("PG 결제 실패"));
 	}
 
 	/**
@@ -123,17 +133,17 @@ class LecturePaymentOrchestrationTest {
 	void testEnrollLecture_failureInStep3() {
 		// 트랜잭션 1, 2는 성공한다고 가정
 		doNothing().when(enrollmentService).enrollmentCountTryIncrement(lectureId, userId);
-		doNothing().when(enrollmentService).processPayment(paymentRequest, lectureId, userId);
+		doNothing().when(enrollmentService).processPayment(paymentRequest);
 		// 트랜잭션 3에서 예외 발생
 		doThrow(new BusinessException("최종 결제 반영 실패"))
 			.when(enrollmentService).finalizeEnrollment(lectureId, userId);
 
 		BusinessException ex = assertThrows(BusinessException.class,
-			() -> orchestration.enrollLecture(lectureId, userId, paymentRequest));
+			() -> orchestration.approve(paymentRequest));
 
 		assertTrue(ex.getMessage().contains("최종 결제 반영 실패"));
 		verify(enrollmentService, times(1)).enrollmentCountTryIncrement(lectureId, userId);
-		verify(enrollmentService, times(1)).processPayment(paymentRequest, lectureId, userId);
+		verify(enrollmentService, times(1)).processPayment(paymentRequest);
 		verify(enrollmentService, times(1)).finalizeEnrollment(lectureId, userId);
 
 		// FinalizationCompensationEvent가 발행되었는지 검증

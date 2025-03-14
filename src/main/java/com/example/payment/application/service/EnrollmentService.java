@@ -1,6 +1,5 @@
 package com.example.payment.application.service;
 
-import com.example.payment.entity.Payment;
 import com.example.payment.web.controller.dto.PaymentRequest;
 import com.example.payment.web.external.dto.PaymentResponse;
 import com.example.payment.application.exception.BusinessException;
@@ -8,7 +7,7 @@ import com.example.payment.repository.EnrollmentRepository;
 import com.example.payment.repository.PaymentRepository;
 import com.example.payment.entity.Enrollment;
 import com.example.payment.repository.EnrollmentCountRepository;
-import com.example.payment.web.external.PgApiExecutorService;
+import com.example.payment.web.external.PgApiClient;
 import lombok.RequiredArgsConstructor;
 import org.springframework.retry.annotation.Backoff;
 import org.springframework.retry.annotation.Retryable;
@@ -22,7 +21,7 @@ public class EnrollmentService {
 	private final EnrollmentCountRepository enrollmentCountRepository;
 	private final EnrollmentRepository enrollmentRepository;
 	private final PaymentRepository paymentRepository;
-	private final PgApiExecutorService pgApiExecutorService;
+	private final PgApiClient pgApiClient;
 
 	/**
 	 * 트랜잭션 1: 동시성 제어 - 수강 인원 증가
@@ -52,8 +51,11 @@ public class EnrollmentService {
 		backoff = @Backoff(delay = 2000, maxDelay = 5000, random = true)
 	)
 	@Transactional
-	public void processPayment(PaymentRequest paymentRequest, Long lectureId, Long userId) {
-		PaymentResponse response = pgApiExecutorService.mockPaymentApiCall(paymentRequest);
+	public void processPayment(PaymentRequest paymentRequest) {
+		Long lectureId = paymentRequest.getLectureId();
+		Long userId = paymentRequest.getUserId();
+
+		PaymentResponse response = pgApiClient.mockApproveApiCall(paymentRequest);
 		if (!response.isSuccess()) {
 			throw new BusinessException("결제 실패");
 		}

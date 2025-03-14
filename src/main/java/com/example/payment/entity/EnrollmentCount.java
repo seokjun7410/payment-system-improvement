@@ -5,12 +5,12 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
-import jakarta.persistence.Version;
+import jakarta.persistence.UniqueConstraint;
 import lombok.Data;
 
 @Data
 @Entity
-@Table(name = "enrollment_count")
+@Table(name = "enrollment_count", uniqueConstraints = @UniqueConstraint(columnNames = "lectureId"))
 public class EnrollmentCount {
 
 	@Id
@@ -26,7 +26,4 @@ public class EnrollmentCount {
 	// 최대 정원
 	private int capacity;
 
-	// 낙관적 락을 위한 버전 관리
-	@Version
-	private Long version;
 }

@@ -11,7 +11,7 @@ import org.springframework.data.repository.query.Param;
 public interface PaymentRepository extends JpaRepository<Payment, Long> {
 
 	// "FINAL_COMPLETED"가 아닌 상태 중, 생성 시간이 threshold 이전인 Payment 목록 조회
-	List<Payment> findByStatusNotAndCreatedAtBefore(String status, LocalDateTime threshold);
+	List<Payment> findByStatusNotInAndCreatedAtBefore(List<String> statuses, LocalDateTime threshold);
 
 	// lectureId, userId, 특정 상태를 기준으로 Payment 조회
 	Payment findByLectureIdAndUserIdAndStatus(Long lectureId, Long userId, String status);

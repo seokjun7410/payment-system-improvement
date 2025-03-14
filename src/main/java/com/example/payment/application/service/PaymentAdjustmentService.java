@@ -2,6 +2,7 @@ package com.example.payment.application.service;
 
 import com.example.payment.entity.Payment;
 import com.example.payment.repository.PaymentRepository;
+import com.example.payment.web.external.PgApiClient;
 import java.time.LocalDateTime;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
@@ -9,7 +10,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 @Service
 @RequiredArgsConstructor
@@ -18,6 +18,7 @@ public class PaymentAdjustmentService implements CommandLineRunner {
 
 	private final PaymentRepository paymentRepository;
 	private final EnrollmentService enrollmentService;
+	private final PgApiClient pgApiClient;
 
 	/**
 	 * 스케줄러: 5분마다 미완료(PENDING 등) 결제를 대상으로 보정 프로세스를 수행합니다.
@@ -25,7 +26,7 @@ public class PaymentAdjustmentService implements CommandLineRunner {
 	@Scheduled(fixedDelay = 300000) // 300,000ms = 5분
 	public void adjustPendingPayments() {
 		LocalDateTime threshold = LocalDateTime.now().minusMinutes(5);
-		List<Payment> pendingPayments = paymentRepository.findByStatusNotAndCreatedAtBefore("FINAL_COMPLETED", threshold);
+		List<Payment> pendingPayments = paymentRepository.findByStatusNotInAndCreatedAtBefore(List.of("EXCEEDS_CAPACITY","FINAL_COMPLETED"), threshold);
 
 		for (Payment payment : pendingPayments) {
 			try {
@@ -54,10 +55,9 @@ public class PaymentAdjustmentService implements CommandLineRunner {
 
 	/**
 	 * 실제 PG 결제내역을 조회하는 모킹 메서드
-	 * 실제 구현 시 외부 PG API를 호출하여 출금 여부를 확인하면 됩니다.
 	 */
 	public boolean checkPaymentStatusFromPG(Payment payment) {
-		// 모킹: 실제 상황에 따라 true/false 처리 (여기서는 단순히 true 반환)
+		pgApiClient.mockFindPaymentHistoryApiCall(payment);
 		return true;
 	}
 }

@@ -1,9 +1,11 @@
 package com.example.payment.application.service;
 
+import com.example.payment.application.event.PaymentStatusToCancelEvent;
 import com.example.payment.repository.PaymentRepository;
 import com.example.payment.application.event.FinalizationCompensationEvent;
 import com.example.payment.application.event.PaymentCancellationEvent;
 import com.example.payment.repository.EnrollmentCountRepository;
+import com.example.payment.web.external.PgApiClient;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.retry.annotation.Backoff;
@@ -19,6 +21,7 @@ public class CompensationService {
 
 	private final EnrollmentCountRepository enrollmentCountRepository;
 	private final PaymentRepository paymentRepository;
+	private final PgApiClient pgApiClient;
 
 	/**
 	 * 트랜잭션 2 보상: PG API 호출 실패에 따른 보상 처리
@@ -29,9 +32,6 @@ public class CompensationService {
 	@Retryable(value = Exception.class, maxAttempts = 3,
 		backoff = @Backoff(delay = 1000, maxDelay = 3000, random = true))
 	public void processPaymentCancellation(PaymentCancellationEvent event) {
-		// c (모킹 처리)
-		// pgApiClient.cancelPayment(...);
-
 		// 보상 로직: 수강 인원 감소
 		enrollmentCountRepository.decrement(event.getLectureId());
 
@@ -46,6 +46,7 @@ public class CompensationService {
 			event.getLectureId(), event.getUserId());
 	}
 
+
 	/**
 	 * 트랜잭션 3 보상: 구매 DB 반영 실패에 따른 보상 처리
 	 * - 수강 인원 감소 및 외부 출금 취소 API(모킹) 호출 후,
@@ -59,7 +60,7 @@ public class CompensationService {
 		enrollmentCountRepository.decrement(event.getLectureId());
 
 		// 외부 출금 취소 API 호출 (모킹 처리)
-		// pgApiClient.cancelWithdrawal(...);
+		pgApiClient.mockCancelApiCall(event);
 
 		// 보상 성공 시 Payment 상태 업데이트: PAYMENT_PROCESSED → CANCELLED
 		int updated = paymentRepository.updateStatusConditionally(
@@ -100,6 +101,15 @@ public class CompensationService {
 			event.getLectureId(), event.getUserId(), event.getReason(), updated, e);
 		sendSlackAlert("Finalization compensation FAILED for lectureId: " +
 			event.getLectureId() + ", userId: " + event.getUserId() + ". Reason: " + e.getMessage());
+	}
+
+	@Transactional
+	@Retryable(value = Exception.class, maxAttempts = 3,
+		backoff = @Backoff(delay = 1000, maxDelay = 3000, random = true))
+	public void updateCancelStatus(PaymentStatusToCancelEvent event) {
+		paymentRepository.updateStatusConditionally(event.getLectureId(), event.getUserId(), "CREATED", "EXCEEDS_CAPACITY");
+		log.info("PaymentCancellation compensation successful for lectureId: {}, userId: {}",
+			event.getLectureId(), event.getUserId());
 	}
 
 	/**

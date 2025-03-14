@@ -11,6 +11,7 @@ import com.example.payment.application.event.FinalizationCompensationEvent;
 import com.example.payment.application.event.PaymentCancellationEvent;
 import com.example.payment.repository.EnrollmentCountRepository;
 import com.example.payment.repository.PaymentRepository;
+import com.example.payment.web.external.PgApiClient;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -26,6 +27,9 @@ class CompensationServiceTest {
 
 	@Mock
 	private PaymentRepository paymentRepository;
+
+	@Mock
+	private PgApiClient pgApiClient;
 
 	@InjectMocks
 	private CompensationService compensationService;

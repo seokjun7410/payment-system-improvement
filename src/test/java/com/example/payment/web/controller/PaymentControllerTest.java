@@ -67,11 +67,10 @@ class PaymentControllerTest {
 
 	@Test
 	void testPaymentEndpoint_actualBehavior() throws Exception {
-
-
 		PaymentRequest paymentRequest = new PaymentRequest();
 		paymentRequest.setAmount(100.0);
 		paymentRequest.setUserId(1L);
+		paymentRequest.setLectureId(1L);
 
 		// 실제 API 호출 (실제 비즈니스 로직이 실행됨)
 		mockMvc.perform(post("/payment")

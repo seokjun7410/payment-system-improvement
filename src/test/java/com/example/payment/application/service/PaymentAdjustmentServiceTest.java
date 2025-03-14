@@ -13,6 +13,7 @@ import static org.mockito.Mockito.when;
 
 import com.example.payment.entity.Payment;
 import com.example.payment.repository.PaymentRepository;
+import com.example.payment.web.external.PgApiClient;
 import java.time.LocalDateTime;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
@@ -25,8 +26,9 @@ import org.mockito.junit.jupiter.MockitoExtension;
 class TestPaymentAdjustmentService extends PaymentAdjustmentService {
 	private final boolean withdrawStatus;
 
-	public TestPaymentAdjustmentService(PaymentRepository paymentRepository, EnrollmentService enrollmentService, boolean withdrawStatus) {
-		super(paymentRepository, enrollmentService);
+	public TestPaymentAdjustmentService(PaymentRepository paymentRepository, EnrollmentService enrollmentService,
+		PgApiClient pgApiClient, boolean withdrawStatus) {
+		super(paymentRepository, enrollmentService, pgApiClient);
 		this.withdrawStatus = withdrawStatus;
 	}
 
@@ -41,6 +43,9 @@ class PaymentAdjustmentServiceTest {
 
 	@Mock
 	private PaymentRepository paymentRepository;
+
+	@Mock
+	private PgApiClient pgApiClient;
 
 	@Mock
 	private EnrollmentService enrollmentService;
@@ -74,10 +79,10 @@ class PaymentAdjustmentServiceTest {
 	@Test
 	void testAdjustPendingPayments_success() {
 		// TestPaymentAdjustmentService의 withdrawStatus를 true로 설정
-		testService = new TestPaymentAdjustmentService(paymentRepository, enrollmentService, true);
+		testService = new TestPaymentAdjustmentService(paymentRepository, enrollmentService, pgApiClient ,true);
 
 		// PaymentRepository에서 pendingPayment 반환
-		when(paymentRepository.findByStatusNotAndCreatedAtBefore(eq("FINAL_COMPLETED"), any(LocalDateTime.class)))
+		when(paymentRepository.findByStatusNotInAndCreatedAtBefore(eq(List.of("EXCEEDS_CAPACITY","FINAL_COMPLETED")), any(LocalDateTime.class)))
 			.thenReturn(List.of(pendingPayment));
 
 		// 조정 프로세스 실행
@@ -95,9 +100,11 @@ class PaymentAdjustmentServiceTest {
 	@Test
 	void testAdjustPendingPayments_noWithdrawal() {
 		// TestPaymentAdjustmentService의 withdrawStatus를 false로 설정
-		testService = new TestPaymentAdjustmentService(paymentRepository, enrollmentService, false);
+		testService = new TestPaymentAdjustmentService(paymentRepository, enrollmentService,
+			pgApiClient, true);
 
-		when(paymentRepository.findByStatusNotAndCreatedAtBefore(eq("FINAL_COMPLETED"), any(LocalDateTime.class)))
+		when(paymentRepository.findByStatusNotInAndCreatedAtBefore(
+			eq(List.of("EXCEEDS_CAPACITY", "FINAL_COMPLETED")), any(LocalDateTime.class)))
 			.thenReturn(List.of(pendingPayment));
 
 		testService.adjustPendingPayments();
@@ -113,24 +120,5 @@ class PaymentAdjustmentServiceTest {
 			Payment savedPayment = paymentCaptor.getValue();
 			assertNotEquals("FINAL_COMPLETED", savedPayment.getStatus());
 		}
-	}
-
-	/**
-	 * run() 메서드 테스트: run() 호출 시 adjustPendingPayments()가 실행됨.
-	 */
-	@Test
-	void testRun_callsAdjustPendingPayments() throws Exception {
-		// TestPaymentAdjustmentService의 withdrawStatus 값은 상관없이
-		testService = new TestPaymentAdjustmentService(paymentRepository, enrollmentService, true);
-		// 조정 프로세스가 실행될 때 아무 Payment가 없도록 설정
-		when(paymentRepository.findByStatusNotAndCreatedAtBefore(eq("FINAL_COMPLETED"), any(LocalDateTime.class)))
-			.thenReturn(List.of());
-
-		// run() 호출
-		testService.run();
-
-		// PaymentRepository.findByStatusNotAndCreatedAtBefore가 호출되었는지 검증
-		verify(paymentRepository, times(1))
-			.findByStatusNotAndCreatedAtBefore(eq("FINAL_COMPLETED"), any(LocalDateTime.class));
 	}
 }

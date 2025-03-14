@@ -1,11 +1,12 @@
 package com.example.payment.e2e;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.example.payment.application.exception.BusinessException;
-import com.example.payment.application.orchestration.LecturePaymentOrchestration;
+import com.example.payment.application.orchestration.PaymentApproveOrchestration;
 import com.example.payment.application.service.EnrollmentService;
 import com.example.payment.application.service.PaymentAdjustmentService;
 import com.example.payment.entity.Enrollment;
@@ -15,10 +16,12 @@ import com.example.payment.repository.EnrollmentCountRepository;
 import com.example.payment.repository.EnrollmentRepository;
 import com.example.payment.repository.PaymentRepository;
 import com.example.payment.web.controller.dto.PaymentRequest;
-import com.example.payment.web.external.PgApiExecutorService;
+import com.example.payment.web.external.PgApiClient;
 import com.example.payment.web.external.dto.PaymentResponse;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -47,7 +50,7 @@ class PaymentE2EFailureFlowTest {
 	private EnrollmentCountRepository enrollmentCountRepository;
 
 	@Autowired
-	private LecturePaymentOrchestration lecturePaymentOrchestration;
+	private PaymentApproveOrchestration paymentApproveOrchestration;
 
 	@Autowired
 	private PaymentAdjustmentService paymentAdjustmentService;
@@ -97,7 +100,7 @@ class PaymentE2EFailureFlowTest {
 		mockMvc.perform(post("/payment")
 				.contentType(MediaType.APPLICATION_JSON)
 				.content(asJsonString(request)))
-			.andExpect(status().is5xxServerError());
+			.andExpect(status().isBadRequest());
 
 		// EnrollmentCount는 변동 없이 정원 그대로여야 함
 		EnrollmentCount ecAfter = enrollmentCountRepository.findByLectureId(lectureId);
@@ -123,6 +126,8 @@ class PaymentE2EFailureFlowTest {
 	 */
 	@Test
 	void testStep2Failure_compensationTriggered() throws Exception {
+		CountDownLatch latch = new CountDownLatch(1);
+
 		// EnrollmentCount 생성 (정원 여유)
 		EnrollmentCount ec = new EnrollmentCount();
 		ec.setLectureId(lectureId);
@@ -131,20 +136,24 @@ class PaymentE2EFailureFlowTest {
 		enrollmentCountRepository.save(ec);
 
 		Payment payment = new Payment();
-		payment.setLectureId(1L);
-		payment.setUserId(1L);
+		payment.setLectureId(lectureId);
+		payment.setUserId(userId);
 		payment.setStatus("CREATED");
 		payment.setCreatedAt(LocalDateTime.now().minusMinutes(1));
 		paymentRepository.save(payment);
 
 		PaymentRequest request = new PaymentRequest();
+		request.setUserId(userId);
+		request.setLectureId(lectureId);
 
 		mockMvc.perform(post("/payment")
 				.contentType(MediaType.APPLICATION_JSON)
 				.content(asJsonString(request)))
-			.andExpect(status().is5xxServerError());
+			.andExpect(status().isBadRequest());
 
-		// CompensationService의 보상 로직이 동기적으로 처리되어,
+		boolean completed = latch.await(2, TimeUnit.SECONDS);
+
+		// CompensationService의 보상 로직이 비동기적으로 처리되어,
 		// Payment 상태가 "CANCELLED" 또는 "CANCELLATION_FAILED" 중 하나로 업데이트되어야 함.
 		Payment p = paymentRepository.findAll().get(0);
 		assertThat(p.getStatus()).isIn("CANCELLED", "CANCELLATION_FAILED");
@@ -166,6 +175,8 @@ class PaymentE2EFailureFlowTest {
 	 */
 	@Test
 	void testStep3Failure_compensationTriggered() throws Exception {
+		CountDownLatch latch = new CountDownLatch(1);
+
 		// EnrollmentCount 생성 (정원 여유)
 		EnrollmentCount ec = new EnrollmentCount();
 		ec.setLectureId(lectureId);
@@ -174,18 +185,22 @@ class PaymentE2EFailureFlowTest {
 		enrollmentCountRepository.save(ec);
 
 		Payment payment = new Payment();
-		payment.setLectureId(1L);
-		payment.setUserId(1L);
+		payment.setLectureId(lectureId);
+		payment.setUserId(userId);
 		payment.setStatus("CREATED");
 		payment.setCreatedAt(LocalDateTime.now().minusMinutes(1));
 		paymentRepository.save(payment);
 
 		PaymentRequest request = new PaymentRequest();
+		request.setLectureId(lectureId);
+		request.setUserId(userId);
 
 		mockMvc.perform(post("/payment")
 				.contentType(MediaType.APPLICATION_JSON)
 				.content(asJsonString(request)))
-			.andExpect(status().is5xxServerError());
+			.andExpect(status().isBadRequest());
+
+		boolean completed = latch.await(2, TimeUnit.SECONDS);
 
 		// CompensationService의 보상 로직 실행 후, Payment 상태가 "CANCELLED" 또는 "FINAL_COMPENSATION_FAILED"로 업데이트되어야 함.
 		Payment p = paymentRepository.findAll().get(0);
@@ -216,10 +231,10 @@ class PaymentE2EFailureFlowTest {
 	static class TestPgApiExecutorConfig {
 		@Bean
 		@Primary
-		public PgApiExecutorService testPgApiExecutorService() {
-			return new PgApiExecutorService() {
+		public PgApiClient testPgApiExecutorService() {
+			return new PgApiClient() {
 				@Override
-				public PaymentResponse mockPaymentApiCall(PaymentRequest request) {
+				public PaymentResponse mockApproveApiCall(PaymentRequest request) {
 					PaymentResponse response = new PaymentResponse();
 					response.setSuccess(false);
 					response.setMessage("Simulated PG API failure");
@@ -239,8 +254,8 @@ class PaymentE2EFailureFlowTest {
 		public EnrollmentService testEnrollmentService(EnrollmentCountRepository ecRepo,
 			EnrollmentRepository eRepo,
 			PaymentRepository pRepo,
-			PgApiExecutorService pgApiExecutorService) {
-			return new EnrollmentService(ecRepo, eRepo, pRepo, pgApiExecutorService) {
+			PgApiClient pgApiClient) {
+			return new EnrollmentService(ecRepo, eRepo, pRepo, pgApiClient) {
 				@Override
 				public void finalizeEnrollment(Long lectureId, Long userId) {
 					// Enrollment 생성 전 예외 발생을 통해 트랜잭션 3 실패 시뮬레이션

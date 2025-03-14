@@ -6,7 +6,7 @@ import com.example.payment.repository.EnrollmentCountRepository;
 import com.example.payment.repository.EnrollmentRepository;
 import com.example.payment.repository.PaymentRepository;
 import com.example.payment.web.controller.dto.PaymentRequest;
-import com.example.payment.web.external.PgApiExecutorService;
+import com.example.payment.web.external.PgApiClient;
 import com.example.payment.web.external.dto.PaymentResponse;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -32,7 +32,7 @@ class EnrollmentServiceTest {
 	private PaymentRepository paymentRepository;
 
 	@Mock
-	private PgApiExecutorService pgApiExecutorService;
+	private PgApiClient pgApiClient;
 
 	@InjectMocks
 	private EnrollmentService enrollmentService;
@@ -100,18 +100,21 @@ class EnrollmentServiceTest {
 	@Test
 	void testProcessPayment_success() {
 		PaymentRequest request = new PaymentRequest();
+		request.setLectureId(lectureId);  // 1L 설정
+		request.setUserId(userId);        // 100L 설정
+
 		PaymentResponse successResponse = new PaymentResponse();
 		successResponse.setSuccess(true);
 		successResponse.setMessage("Payment Success");
 
-		when(pgApiExecutorService.mockPaymentApiCall(ArgumentMatchers.eq(request)))
+		when(pgApiClient.mockApproveApiCall(ArgumentMatchers.eq(request)))
 			.thenReturn(successResponse);
 		when(paymentRepository.updateStatusConditionally(lectureId, userId, "COUNT_UPDATED", "PAYMENT_PROCESSED"))
 			.thenReturn(1);
 
-		assertDoesNotThrow(() -> enrollmentService.processPayment(request, lectureId, userId));
+		assertDoesNotThrow(() -> enrollmentService.processPayment(request));
 
-		verify(pgApiExecutorService, times(1)).mockPaymentApiCall(request);
+		verify(pgApiClient, times(1)).mockApproveApiCall(request);
 		verify(paymentRepository, times(1))
 			.updateStatusConditionally(lectureId, userId, "COUNT_UPDATED", "PAYMENT_PROCESSED");
 	}
@@ -124,14 +127,14 @@ class EnrollmentServiceTest {
 		failedResponse.setSuccess(false);
 		failedResponse.setMessage("Payment Failed");
 
-		when(pgApiExecutorService.mockPaymentApiCall(ArgumentMatchers.eq(request)))
+		when(pgApiClient.mockApproveApiCall(ArgumentMatchers.eq(request)))
 			.thenReturn(failedResponse);
 
 		BusinessException exception = assertThrows(BusinessException.class,
-			() -> enrollmentService.processPayment(request, lectureId, userId));
+			() -> enrollmentService.processPayment(request));
 
 		assertTrue(exception.getMessage().contains("결제 실패"));
-		verify(pgApiExecutorService, times(1)).mockPaymentApiCall(request);
+		verify(pgApiClient, times(1)).mockApproveApiCall(request);
 		verify(paymentRepository, never())
 			.updateStatusConditionally(anyLong(), anyLong(), eq("COUNT_UPDATED"), eq("PAYMENT_PROCESSED"));
 	}
@@ -140,20 +143,23 @@ class EnrollmentServiceTest {
 	@Test
 	void testProcessPayment_failure_dueToStatusUpdate() {
 		PaymentRequest request = new PaymentRequest();
+		request.setLectureId(lectureId);  // 1L 설정
+		request.setUserId(userId);        // 100L 설정
+
 		PaymentResponse successResponse = new PaymentResponse();
 		successResponse.setSuccess(true);
 		successResponse.setMessage("Payment Success");
 
-		when(pgApiExecutorService.mockPaymentApiCall(ArgumentMatchers.eq(request)))
+		when(pgApiClient.mockApproveApiCall(ArgumentMatchers.eq(request)))
 			.thenReturn(successResponse);
 		when(paymentRepository.updateStatusConditionally(lectureId, userId, "COUNT_UPDATED", "PAYMENT_PROCESSED"))
 			.thenReturn(0);
 
 		BusinessException exception = assertThrows(BusinessException.class,
-			() -> enrollmentService.processPayment(request, lectureId, userId));
+			() -> enrollmentService.processPayment(request));
 
 		assertTrue(exception.getMessage().contains("Payment 상태 업데이트 실패(COUNT_UPDATED -> PAYMENT_PROCESSED)"));
-		verify(pgApiExecutorService, times(1)).mockPaymentApiCall(request);
+		verify(pgApiClient, times(1)).mockApproveApiCall(request);
 		verify(paymentRepository, times(1))
 			.updateStatusConditionally(lectureId, userId, "COUNT_UPDATED", "PAYMENT_PROCESSED");
 	}

@@ -1,6 +1,6 @@
-package com.example.payment.web.controller;
+package com.example.payment.e2e;
 
-import com.example.payment.application.orchestration.LecturePaymentOrchestration;
+import com.example.payment.application.orchestration.PaymentApproveOrchestration;
 import com.example.payment.application.service.PaymentAdjustmentService;
 import com.example.payment.entity.Enrollment;
 import com.example.payment.entity.EnrollmentCount;
@@ -45,7 +45,7 @@ class PaymentE2EFlowTest {
 	private PaymentRepository paymentRepository;
 
 	@Autowired
-	private LecturePaymentOrchestration lecturePaymentOrchestration;
+	private PaymentApproveOrchestration paymentApproveOrchestration;
 
 	@Autowired
 	private PaymentAdjustmentService paymentAdjustmentService;
@@ -85,7 +85,8 @@ class PaymentE2EFlowTest {
 
 		// 요청 시 사용할 PaymentRequest 객체 생성 (필요 필드 값 설정)
 		PaymentRequest paymentRequest = new PaymentRequest();
-		// 예시: paymentRequest.setAmount(100.0);
+		paymentRequest.setLectureId(1L);
+		paymentRequest.setUserId(1L);
 
 		// /payment 엔드포인트 호출
 		mockMvc.perform(post("/payment")
